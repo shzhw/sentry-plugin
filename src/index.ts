@@ -1,53 +1,26 @@
-import got from 'got';
-import FormData from 'form-data';
-import path from 'path';
-import PromisePool from 'es6-promise-pool';
+const got = require('got');
+const FormDataClass = require('form-data');
+const path = require('path');
+const PromisePool = require('es6-promise-pool');
 
 const fs = require('fs');
 
-// // const client = got.extend({
-// //   headers: {
-// //     'Content-Type': 'application/json',
-// //     authorization: 'Bearer 256f6da2b2ae447695d4d72aebed48136b994c8f0ba2441ca5090d40f47bd41d'
-// //   },
-// // });
-
-// // client.post('http://sentry-int.hua-yong.com/api/0/organizations/huayong/releases/', {
-// //   body: JSON.stringify({ version: 'test-plug-0.0.2', projects: ['apollo-anlle'] })
-// // }).then(data => {
-// //   console.log(data);
-// // })
-
-
-// const formData = new FormData();
-// formData.append('file', fs.createReadStream('./test-upload.js'));
-// formData.append('name', '~/test-upload-01.js');
-// const client = got.extend({
-//   headers: {
-//     authorization: 'Bearer 256f6da2b2ae447695d4d72aebed48136b994c8f0ba2441ca5090d40f47bd41d'
-//   }
-// });
-// client.post('http://sentry-int.hua-yong.com/api/0/organizations/huayong/releases/test-plug-0.0.2/files/', {
-//   body: formData
-// }).then(data => {
-//   console.log(data);
-// });
-
 type Release = string | number | Function;
-
-interface OptionsConfig {
+interface IOptionsConfig {
   baseURL: string
   org: string
-  projects: string | string[]
+  project: string | string[]
   authToken: string
   release: Release
   include?: RegExp
   exclude?: RegExp
   delMap?: boolean
+  urlPrefix?: string
   errorHandler?: Function
+  silent?: boolean
 }
 
-interface File {
+interface IFile {
   filePath: string,
   name: string
 }
@@ -55,30 +28,38 @@ interface File {
 const SENTRY_BASE_URL: string = 'http://sentry-int.hua-yong.com';
 const DEFAULT_DELETE_FILE_REGEX: RegExp = /\.map$/;
 const DEFAULT_INCLUDE: RegExp = /\.js$|\.map$/;
+const DEFAULT_URL_PREFIX = '~/';
 
-const ERROR_HEADER: string = 'Sentry Error：';
-const ERROR_INFO = {
-  'error_001': ERROR_HEADER + ''
-}
+// const ERROR_HEADER: string = 'Sentry Error：';
+// const ERROR_INFO = {
+//   'error_001': ERROR_HEADER + ''
+// }
 
-export default class {
-  baseURL: string
-  org: string
-  projects: string[]
-  authToken: string
-  release: Release
-  include: RegExp
-  exclude: RegExp
-  delFileRegExp: RegExp
+module.exports = class {
+  baseURL: string // sentry域名
+  org: string // 组织名
+  projects: string[] // 项目组名
+  authToken: string // sentry token
+  release: Release // 版本号
+  include: RegExp // 需要上传的文件正则
+  exclude: RegExp // 不需要上传的文件正则
+  delMap: boolean // 是否删除map文件
+  urlPrefix: string // sentry 显示的文件路径
+  errorHandler: Function // 错误回调
+  silent: boolean // 静默
 
-  constructor(opts: OptionsConfig) {
+  delFileRegExp: RegExp // 要删除的文件的正则
+
+  constructor(opts: IOptionsConfig) {
     this.baseURL = (opts.baseURL || SENTRY_BASE_URL) + '/api/0';
     this.org = opts.org;
-    this.projects = Array.isArray(opts.projects) ? opts.projects : [opts.projects];
+    this.projects = Array.isArray(opts.project) ? opts.project : [opts.project];
     this.authToken = opts.authToken;
     this.release = opts.release;
-    this.include = opts.include;
+    this.include = opts.include || DEFAULT_INCLUDE;
     this.exclude = opts.exclude;
+    this.delMap = opts.delMap;
+    this.urlPrefix = opts.urlPrefix || DEFAULT_URL_PREFIX;
 
     this.delFileRegExp = DEFAULT_DELETE_FILE_REGEX;
 
@@ -86,29 +67,54 @@ export default class {
       this.release = this.release();
     }
 
-    // todo
-    // 校验必传参数
-    // todo end
-
+    this.validateOptRequired(opts);
   }
 
   apply(compiler): void {
     // 创建release-> sentry
     compiler.hooks.afterEmit.tapPromise('SentryPlugin', async compilation => {
       const files = this.getSourceFiles(compilation);
-      await this.createRelease();
-      await this.uploadSourceMap(files);
+      try {
+        await this.createRelease();
+        await this.uploadSourceMap(files);
+      } catch (e) {
+        throw Error(e)
+      }
+
       // todo  报错信息
     });
 
     // 删除 map 文件
     compiler.hooks.done.tapPromise('SentryPlugin', async stats => {
+      if (!this.delMap) return;
       await this.deleteLocalSourceMap(stats);
     });
   }
 
-  private validateOptRequired(opts: OptionsConfig): boolean {
-    return false;
+  private validateOptRequired(opts: IOptionsConfig): never | void {
+    const {
+      baseURL,
+      org,
+      project,
+      authToken,
+      release,
+    } = opts;
+
+    if (!baseURL.trim()) {
+      
+    }
+    if (!org.trim()) {
+      
+    }
+    if (!project || (Array.isArray(project) && !project.length) || (typeof project === 'string' && !project.trim())) {
+      
+    }
+    if (!authToken.trim()) {
+      
+    }
+    if (!release || (typeof release === 'string' && !release.trim())) {
+      
+    }
   }
 
   private isIncludeOrExclude(filename) {
@@ -118,7 +124,7 @@ export default class {
     return isIncluded && !isExcluded;
   }
 
-  private getSourceFiles(compilation): File[] {
+  private getSourceFiles(compilation): IFile[] {
     return Object.keys(compilation.assets).map((name) => {
       if (this.isIncludeOrExclude(name)) {
         return {
@@ -138,7 +144,7 @@ export default class {
       },
     });
 
-    return client.post(`http://sentry-int.hua-yong.com/api/0/organizations/huayong/releases/`, {
+    return client.post(`${this.baseURL}/organizations/${this.org}/releases/`, {
       body: JSON.stringify({
         version: this.release,
         projects: this.projects
@@ -147,14 +153,14 @@ export default class {
   }
 
   private uploadSourceMap(files: any[]): Promise<void> {
-    const upload = (file: File) => {
+    const upload = (file: IFile) => {
       const { filePath, name } = file;
-      const formData = new FormData();
-      formData.append('file', filePath);
-      formData.append('name', '~/' + name);
+      const formData = new FormDataClass();
+      formData.append('file', fs.createReadStream(filePath));
+      formData.append('name', this.urlPrefix + name);
       const client = got.extend({
         headers: {
-          authorization: 'Bearer 256f6da2b2ae447695d4d72aebed48136b994c8f0ba2441ca5090d40f47bd41d'
+          authorization: `Bearer ${this.authToken}`
         }
       });
       return client.post(`${this.baseURL}/organizations/${this.org}/releases/${this.release}/files/`, {
@@ -183,13 +189,15 @@ export default class {
           // del map文件
           fs.unlinkSync(filePath);
           // del map引用
-          const oriFilePath = filePath.replace(/\.map/, '');
+          let nameArr: string[] = mapName.split('/');
+          let oriFileName: string = nameArr[nameArr.length - 1];
+          const oriFilePath: string = filePath.replace(/\.map/, '');
           const oriFileData = fs.readFileSync(oriFilePath, 'utf-8');
-          const regexp = new RegExp(`\\/\\/\\s*?\\#\\s*?sourceMappingURL\\s*?\\=\\s*?${oriFilePath.replace(/\./g, '\\.')}\\s*?$`);
+          const regexp = new RegExp(`\\/\\/\\s*?\\#\\s*?sourceMappingURL\\s*?\\=\\s*?${oriFileName.replace(/\./g, '\\.')}\\s*?$`);
           fs.writeFileSync(oriFilePath, oriFileData.replace(regexp, ''));
         }
       });
-      // todo 删除文件错误得信息
+    // todo 删除文件错误得信息
     // # sourceMappingURL=app.fa089f0a.js.map
   }
 };
@@ -197,4 +205,14 @@ export default class {
 
 function transformAssetPath(compilation: any, name: string): string {
   return path.join(compilation.compiler.outputPath, name.split('?')[0]);
+}
+
+class SentryError extends Error {
+  message: string
+  code: string
+  blocking: boolean
+}
+
+function createError(): never | void {
+  throw new Error();
 }
