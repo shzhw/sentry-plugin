@@ -2,7 +2,6 @@ const got = require('got');
 const FormDataClass = require('form-data');
 const path = require('path');
 const PromisePool = require('es6-promise-pool');
-
 const fs = require('fs');
 
 type Release = string | number | Function;
@@ -29,12 +28,6 @@ const SENTRY_BASE_URL: string = 'http://sentry-int.hua-yong.com';
 const DEFAULT_DELETE_FILE_REGEX: RegExp = /\.map$/;
 const DEFAULT_INCLUDE: RegExp = /\.js$|\.map$/;
 const DEFAULT_URL_PREFIX = '~/';
-
-// const ERROR_HEADER: string = 'Sentry Error：';
-// const ERROR_INFO = {
-//   'error_001': ERROR_HEADER + ''
-// }
-
 module.exports = class {
   baseURL: string // sentry域名
   org: string // 组织名
@@ -78,10 +71,8 @@ module.exports = class {
         await this.createRelease();
         await this.uploadSourceMap(files);
       } catch (e) {
-        throw Error(e)
+        createError(e.message);
       }
-
-      // todo  报错信息
     });
 
     // 删除 map 文件
@@ -100,20 +91,20 @@ module.exports = class {
       release,
     } = opts;
 
-    if (!baseURL.trim()) {
-      
+    if (!baseURL) {
+      createError('`baseURL` option is required');
     }
-    if (!org.trim()) {
-      
+    if (!org) {
+      createError('`org` option is required');
     }
-    if (!project || (Array.isArray(project) && !project.length) || (typeof project === 'string' && !project.trim())) {
-      
+    if (!project || (Array.isArray(project) && !project.length)) {
+      createError('`project` option is required');
     }
-    if (!authToken.trim()) {
-      
+    if (!authToken) {
+      createError('`authToken` option is required');
     }
-    if (!release || (typeof release === 'string' && !release.trim())) {
-      
+    if (!release) {
+      createError('`release` option is required');
     }
   }
 
@@ -186,19 +177,21 @@ module.exports = class {
       .forEach(mapName => {
         const filePath = transformAssetPath(stats.compilation, mapName);
         if (filePath) {
-          // del map文件
-          fs.unlinkSync(filePath);
-          // del map引用
-          let nameArr: string[] = mapName.split('/');
-          let oriFileName: string = nameArr[nameArr.length - 1];
-          const oriFilePath: string = filePath.replace(/\.map/, '');
-          const oriFileData = fs.readFileSync(oriFilePath, 'utf-8');
-          const regexp = new RegExp(`\\/\\/\\s*?\\#\\s*?sourceMappingURL\\s*?\\=\\s*?${oriFileName.replace(/\./g, '\\.')}\\s*?$`);
-          fs.writeFileSync(oriFilePath, oriFileData.replace(regexp, ''));
+          try {
+            // del map文件
+            fs.unlinkSync(filePath);
+            // del map引用 //# sourceMappingURL=app.fa089f0a.js.map
+            let nameArr: string[] = mapName.split('/');
+            let oriFileName: string = nameArr[nameArr.length - 1];
+            const oriFilePath: string = filePath.replace(/\.map/, '');
+            const oriFileData = fs.readFileSync(oriFilePath, 'utf-8');
+            const regexp = new RegExp(`\\/\\/\\s*?\\#\\s*?sourceMappingURL\\s*?\\=\\s*?${oriFileName.replace(/\./g, '\\.')}\\s*?$`);
+            fs.writeFileSync(oriFilePath, oriFileData.replace(regexp, ''));
+          } catch (e) {
+            createError(e.message);
+          }
         }
       });
-    // todo 删除文件错误得信息
-    // # sourceMappingURL=app.fa089f0a.js.map
   }
 };
 
@@ -209,10 +202,14 @@ function transformAssetPath(compilation: any, name: string): string {
 
 class SentryError extends Error {
   message: string
-  code: string
-  blocking: boolean
+  code?: string
+  constructor({ message, code }) {
+    super('Sentry Plugin Error: ' + message);
+    this.code = code;
+    Object.setPrototypeOf(this, SentryError.prototype);
+  }
 }
 
-function createError(): never | void {
-  throw new Error();
+function createError(message: string, code?: string): never | void {
+  throw new SentryError({ message, code });
 }
