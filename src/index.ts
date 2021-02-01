@@ -17,6 +17,7 @@ interface IOptionsConfig {
   urlPrefix?: string
   errorHandler?: Function
   silent?: boolean
+  errAbort?: Boolean
 }
 
 interface IFile {
@@ -27,7 +28,8 @@ interface IFile {
 const SENTRY_BASE_URL: string = 'http://sentry-int.hua-yong.com';
 const DEFAULT_DELETE_FILE_REGEX: RegExp = /\.map$/;
 const DEFAULT_INCLUDE: RegExp = /\.js$|\.map$/;
-const DEFAULT_URL_PREFIX = '~/';
+const DEFAULT_URL_PREFIX: string = '~/';
+const DEFAULT_BASE_ERROR: string = 'Sentry Plugin Error: ';
 module.exports = class {
   baseURL: string // sentry域名
   org: string // 组织名
@@ -40,38 +42,45 @@ module.exports = class {
   urlPrefix: string // sentry 显示的文件路径
   errorHandler: Function // 错误回调
   silent: boolean // 静默
+  errAbort: boolean // 报错是否终止打包
 
   delFileRegExp: RegExp // 要删除的文件的正则
+  logger: any // webpack logger对象
 
   constructor(opts: IOptionsConfig) {
-    this.baseURL = (opts.baseURL || SENTRY_BASE_URL) + '/api/0';
+    this.baseURL = (opts.baseURL || SENTRY_BASE_URL).replace(/\/$/, '') + '/api/0';
     this.org = opts.org;
-    this.projects = Array.isArray(opts.project) ? opts.project : [opts.project];
+    this.projects = Array.isArray(opts.project) ? opts.project : opts.project ? [opts.project] : null;
     this.authToken = opts.authToken;
     this.release = opts.release;
     this.include = opts.include || DEFAULT_INCLUDE;
     this.exclude = opts.exclude;
     this.delMap = opts.delMap;
     this.urlPrefix = opts.urlPrefix || DEFAULT_URL_PREFIX;
+    this.errAbort = !!opts.errAbort;
 
     this.delFileRegExp = DEFAULT_DELETE_FILE_REGEX;
 
     if (typeof this.release === 'function') {
       this.release = this.release();
     }
-
-    this.validateOptRequired(opts);
   }
 
   apply(compiler): void {
+    this.logger = compiler.getInfrastructureLogger(DEFAULT_BASE_ERROR);
+
+    let valid = this.validateOptRequired();
+    if(!valid) return;
+
     // 创建release-> sentry
     compiler.hooks.afterEmit.tapPromise('SentryPlugin', async compilation => {
       const files = this.getSourceFiles(compilation);
       try {
         await this.createRelease();
         await this.uploadSourceMap(files);
-      } catch (e) {
-        createError(e.message);
+        this.logger.info('Sentry Info: sourcemap upload to complete!');
+      } catch (err) {
+        this.log(err.message);
       }
     });
 
@@ -82,30 +91,36 @@ module.exports = class {
     });
   }
 
-  private validateOptRequired(opts: IOptionsConfig): never | void {
+  private validateOptRequired(): never | boolean {
     const {
       baseURL,
       org,
-      project,
+      projects,
       authToken,
       release,
-    } = opts;
+    } = this;
 
     if (!baseURL) {
-      createError('`baseURL` option is required');
+      this.log('`baseURL` option is required');
+      return false;
     }
     if (!org) {
-      createError('`org` option is required');
+      this.log('`org` option is required');
+      return false;
     }
-    if (!project || (Array.isArray(project) && !project.length)) {
-      createError('`project` option is required');
+    if (!projects) {
+      this.log('`project` option is required');
+      return false;
     }
     if (!authToken) {
-      createError('`authToken` option is required');
+      this.log('`authToken` option is required');
+      return false;
     }
     if (!release) {
-      createError('`release` option is required');
+      this.log('`release` option is required');
+      return false;
     }
+    return true;
   }
 
   private isIncludeOrExclude(filename) {
@@ -135,11 +150,15 @@ module.exports = class {
       },
     });
 
-    return client.post(`${this.baseURL}/organizations/${this.org}/releases/`, {
-      body: JSON.stringify({
-        version: this.release,
-        projects: this.projects
-      })
+    return new Promise((resolve, reject) => {
+      client.post(`${this.baseURL}/organizations/${this.org}/releases/`, {
+        body: JSON.stringify({
+          version: this.release,
+          projects: this.projects
+        })
+      }).then(res => resolve(res)).catch(err => {
+        reject({ message: `releases create fail, ${err.message}` });
+      });
     })
   }
 
@@ -154,8 +173,12 @@ module.exports = class {
           authorization: `Bearer ${this.authToken}`
         }
       });
-      return client.post(`${this.baseURL}/organizations/${this.org}/releases/${this.release}/files/`, {
-        body: formData
+      return new Promise((resolve, reject) => {
+        client.post(`${this.baseURL}/organizations/${this.org}/releases/${this.release}/files/`, {
+          body: formData
+        }).then(res => resolve(res)).catch(err => {
+          reject({ message: `sourcemap upload fail, ${err.message}, ${filePath}`});
+        });
       });
     }
 
@@ -170,6 +193,7 @@ module.exports = class {
     });
 
   }
+
   private deleteLocalSourceMap(stats: any) {
     const { compilation } = stats;
     Object.keys(compilation.assets)
@@ -188,13 +212,22 @@ module.exports = class {
             const regexp = new RegExp(`\\/\\/\\s*?\\#\\s*?sourceMappingURL\\s*?\\=\\s*?${oriFileName.replace(/\./g, '\\.')}\\s*?$`);
             fs.writeFileSync(oriFilePath, oriFileData.replace(regexp, ''));
           } catch (e) {
-            createError(e.message);
+            this.log(`delete sourcemap fail, ${e.message}`);
           }
         }
       });
   }
-};
 
+  private log(message: string): never | void {
+    if(!this.silent) {
+      if(this.errAbort) {
+        createError(message);
+      } else {
+        this.logger.error(message);
+      }
+    }
+  }
+};
 
 function transformAssetPath(compilation: any, name: string): string {
   return path.join(compilation.compiler.outputPath, name.split('?')[0]);
@@ -204,7 +237,7 @@ class SentryError extends Error {
   message: string
   code?: string
   constructor({ message, code }) {
-    super('Sentry Plugin Error: ' + message);
+    super(DEFAULT_BASE_ERROR + message);
     this.code = code;
     Object.setPrototypeOf(this, SentryError.prototype);
   }
