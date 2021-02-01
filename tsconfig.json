@@ -1,7 +1,9 @@
 {
   "compileOnSave": false,
-  "allowSyntheticDefaultImports": true,
   "compilerOptions": {
+    "allowSyntheticDefaultImports": true,
+    "removeComments": true,
+    "alwaysStrict": true,
     "outDir": "./dist/",
     "sourceMap": false,
     "noImplicitAny": false,
@@ -11,7 +13,7 @@
     "declarationDir": "./dist/types/",
     "declarationMap": false,
     "moduleResolution": "node",
-    "module": "esnext",
+    "module": "commonjs",
     "target": "es5",
     "baseUrl": "./",
     "types": [
@@ -23,6 +25,7 @@
     ],
     "lib": [
       "dom",
+      "es5",
       "es2015"
     ],
     "jsx": "react",

@@ -4,11 +4,11 @@
   "description": "",
   "main": "dist/index.js",
   "scripts": {
-    "dev": "tsc --watch --allowSyntheticDefaultImports",
-    "build": "tsc --allowSyntheticDefaultImports",
+    "dev": "tsc --watch",
+    "build": "tsc",
     "commit": "git-cz",
     "test": "jest",
-    "pub": "sh release.sh"
+    "publish": "sh release.sh"
   },
   "repository": {
     "type": "git",
